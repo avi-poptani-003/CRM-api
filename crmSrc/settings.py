@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     'apps.property.apps.PropertyConfig',
     'apps.leads.apps.LeadsConfig',
     'django_filters',
+    'apps.site_visits',
 ]
 
 MIDDLEWARE = [
@@ -170,7 +171,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'crm_db',
         'USER': 'postgres',
-        'PASSWORD': 'root',
+        'PASSWORD': 'postgres',
         'HOST': 'localhost',
         'PORT': '5432'
     }
