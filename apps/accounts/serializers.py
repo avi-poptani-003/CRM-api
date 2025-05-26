@@ -84,9 +84,9 @@ class UserSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone_number', 'role', 
-                  'is_active', 'date_joined', 'last_login', 'created_at', 'updated_at', 'profile_image')
-        read_only_fields = ('id', 'role', 'is_active', 'date_joined', 'last_login', 'created_at', 'updated_at')
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone_number', 'role',
+                  'is_active', 'date_joined', 'last_login', 'created_at', 'updated_at', 'profile_image', 'password_last_changed_at')
+        read_only_fields = ('id', 'role', 'is_active', 'date_joined', 'last_login', 'created_at', 'updated_at', 'password_last_changed_at')
 
 
 class PasswordChangeSerializer(serializers.Serializer):
@@ -123,3 +123,4 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         if attrs['password'] != attrs['password_confirm']:
             raise serializers.ValidationError({"password": "Password fields didn't match."})
         return attrs
+

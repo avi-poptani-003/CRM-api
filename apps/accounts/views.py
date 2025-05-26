@@ -9,6 +9,7 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.conf import settings
 from django.core.mail import send_mail
+from django.utils import timezone
 
 from .serializers import (
     CustomTokenObtainPairSerializer,
@@ -152,6 +153,7 @@ class PasswordChangeView(APIView):
                 return Response({"old_password": ["Wrong password."]}, status=status.HTTP_400_BAD_REQUEST)
             
             user.set_password(serializer.validated_data['new_password'])
+            user.password_last_changed_at = timezone.now()
             user.save()
             return Response({"detail": "Password changed successfully."}, status=status.HTTP_200_OK)
         
@@ -249,9 +251,10 @@ class CustomTokenRefreshView(TokenRefreshView):
                 key='access_token',
                 value=access,
                 httponly=True,
-                secure=True,  # Set to True in production
+                secure=False,  # Set to False for local development
                 samesite='Lax',
-                max_age=60*60,  # 1 hour
+                max_age=60*60  # 1 hour
             )
             response.data.pop('access', None)
         return response
+    
