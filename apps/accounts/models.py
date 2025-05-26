@@ -25,6 +25,7 @@ class User(AbstractUser):
     # Additional metadata fields
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    password_last_changed_at = models.DateTimeField(null=True, blank=True)
 
     # Specify USERNAME_FIELD and REQUIRED_FIELDS
     # email is already a field in AbstractUser, as are first_name and last_name
