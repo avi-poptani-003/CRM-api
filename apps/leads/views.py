@@ -10,6 +10,7 @@ import pandas as pd
 from io import StringIO
 from django.http import HttpResponse
 from rest_framework import status
+from django.db.models import Count
 
 
 class LeadViewSet(viewsets.ModelViewSet):
@@ -35,6 +36,66 @@ class LeadViewSet(viewsets.ModelViewSet):
         # Regular users/agents can only see leads assigned to them
         else:
             return Lead.objects.filter(assigned_to=user)
+
+    @action(detail=False, methods=['get'])
+    def dashboard_stats(self, request):
+        """
+        Get dashboard statistics for leads
+        """
+        queryset = self.get_queryset()
+        
+        # Lead status distribution
+        status_stats = queryset.values('status').annotate(
+            count=Count('status')
+        ).order_by('status')
+        
+        # Lead source distribution
+        source_stats = queryset.values('source').annotate(
+            count=Count('source')
+        ).order_by('source')
+        
+        # Priority distribution
+        priority_stats = queryset.values('priority').annotate(
+            count=Count('priority')
+        ).order_by('priority')
+        
+        # Recent leads (last 5)
+        recent_leads = queryset.order_by('-created_at')[:5]
+        recent_leads_data = []
+        for lead in recent_leads:
+            recent_leads_data.append({
+                'id': lead.id,
+                'name': lead.name,
+                'email': lead.email,
+                'phone': lead.phone,
+                'status': lead.status,
+                'source': lead.source,
+                'priority': lead.priority,
+                'created_at': lead.created_at.isoformat(),
+                'company': lead.company,
+                'interest': lead.interest,
+            })
+        
+        # Total counts
+        total_leads = queryset.count()
+        converted_leads = queryset.filter(status='Converted').count()
+        new_leads = queryset.filter(status='New').count()
+        qualified_leads = queryset.filter(status='Qualified').count()
+        
+        # Conversion rate
+        conversion_rate = (converted_leads / total_leads * 100) if total_leads > 0 else 0
+        
+        return Response({
+            'total_leads': total_leads,
+            'converted_leads': converted_leads,
+            'new_leads': new_leads,
+            'qualified_leads': qualified_leads,
+            'conversion_rate': round(conversion_rate, 1),
+            'status_distribution': list(status_stats),
+            'source_distribution': list(source_stats),
+            'priority_distribution': list(priority_stats),
+            'recent_leads': recent_leads_data,
+        })
 
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser])
     def import_leads(self, request):
@@ -128,4 +189,3 @@ class LeadViewSet(viewsets.ModelViewSet):
         
         df.to_csv(response, index=False)
         return response
-
