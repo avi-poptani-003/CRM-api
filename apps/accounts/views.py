@@ -249,10 +249,9 @@ class CustomTokenRefreshView(TokenRefreshView):
                 key='access_token',
                 value=access,
                 httponly=True,
-                secure=False,  # Set to False for local development
+                secure=True,  # Set to True in production
                 samesite='Lax',
-                max_age=60*60  # 1 hour
+                max_age=60*60,  # 1 hour
             )
             response.data.pop('access', None)
         return response
-    
