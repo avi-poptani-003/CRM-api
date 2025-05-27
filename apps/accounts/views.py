@@ -84,7 +84,6 @@ class UserListCreateView(generics.ListCreateAPIView):
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
-            # Check if username already exists
             username = serializer.validated_data.get('username')
             if User.objects.filter(username=username).exists():
                 return Response(
@@ -92,9 +91,41 @@ class UserListCreateView(generics.ListCreateAPIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            user = serializer.save()
+            user = serializer.save() # User is created here
+
+            # Send welcome email
+            try:
+                subject = f"Welcome to the Team, {user.first_name}!"
+                message_body = f"""
+Hi {user.first_name} {user.last_name},
+
+Welcome to the team! Your account has been successfully created by an administrator.
+
+Here are your account details:
+Username: {user.username}
+Role: {user.get_role_display()}
+
+You can log in using the password that was set during your account creation.
+If you have any questions, please contact your administrator.
+
+Best regards,
+The Admin Team
+"""
+                send_mail(
+                    subject,
+                    message_body,
+                    settings.DEFAULT_FROM_EMAIL, # Your default 'from' email address
+                    [user.email], # Send to the new user's email
+                    fail_silently=False, # Raise an error if sending fails
+                )
+            except Exception as e:
+                # Log the error (e.g., using Python's logging module)
+                print(f"Error sending welcome email to {user.email}: {e}")
+                # You might want to inform the admin that the user was created but the email failed
+                # For now, we'll let the user creation succeed even if email fails.
+
             return Response(
-                UserSerializer(user).data,
+                UserSerializer(user).data, # Respond with the created user's data
                 status=status.HTTP_201_CREATED
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

@@ -7,6 +7,7 @@ from django.shortcuts import get_object_or_404
 from django.db import transaction
 from .models import Property, PropertyImage
 from .serializers import PropertySerializer, PropertyImageSerializer
+from django.core.mail import send_mail
 
 class PropertyViewSet(viewsets.ModelViewSet):
     serializer_class = PropertySerializer
