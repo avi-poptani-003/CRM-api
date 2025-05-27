@@ -240,3 +240,11 @@ JWT_AUTH_HTTPONLY = True
 JWT_AUTH_SAMESITE = 'Lax'# --- Why JWTs are not exposed in response bodies ---
 # JWTs are set as HttpOnly cookies for security. They are never exposed to JS or the response body.
 # The backend reads them from cookies for every request. This prevents XSS attacks and is best practice.
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'  # e.g., 'smtp.gmail.com'
+EMAIL_PORT = 587  # Or 465 for SSL
+EMAIL_USE_TLS = True  # Or EMAIL_USE_SSL = True if your provider uses SSL
+EMAIL_HOST_USER = 'yash.infoxoras@gmail.com'  # Your email account
+EMAIL_HOST_PASSWORD = 'zujvreovmaoiolqm'  # Your email password
+DEFAULT_FROM_EMAIL = 'noreply@yourdomain.com' # Default 'from' address for automated emails
