@@ -1,35 +1,29 @@
-from rest_framework import viewsets, permissions
+# site_visits_app/views.py
+from rest_framework import viewsets
+from rest_framework.permissions import IsAuthenticated
 from .models import SiteVisit
-from .serializers import SiteVisitSerializer, SiteVisitCreateUpdateSerializer
-from apps.accounts.permission import IsAgentOrAbove  # Assuming you have this permission
+from .serializers import SiteVisitSerializer
 
 class SiteVisitViewSet(viewsets.ModelViewSet):
-    queryset = SiteVisit.objects.all().select_related('property', 'client', 'agent')
     serializer_class = SiteVisitSerializer
-
-    def get_serializer_class(self):
-        if self.action in ['create', 'update', 'partial_update']:
-            return SiteVisitCreateUpdateSerializer
-        return SiteVisitSerializer
-
-    def get_permissions(self):
-        """
-        Instantiates and returns the list of permissions that this view requires.
-        """
-        if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            permission_classes = [permissions.IsAuthenticated, IsAgentOrAbove] # Only agents/admins can manage visits
-        else:
-            permission_classes = [permissions.IsAuthenticated] # Authenticated users can view
-        return [permission() for permission in permission_classes]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        # Example: Filter visits based on the logged-in user's role
-        user = self.request.user
-        if user.is_authenticated:
-            if user.role == 'agent':
-                return self.queryset.filter(agent=user) | self.queryset.filter(client=user)
-            elif user.role == 'client':
-                return self.queryset.filter(client=user)
-            elif user.role == 'admin':
-                return self.queryset # Admins see all
-        return SiteVisit.objects.none() # No visits for unauthenticated users or other roles
+        queryset = SiteVisit.objects.all() # Start with all, then filter if necessary for user roles
+
+        # Correctly use select_related with the actual ForeignKey field names
+        # Remove prefetching of 'agent__profile' and 'client_user__profile'
+        # if your User model does not have a 'profile' accessor or if it's not needed.
+        # The BasicUserSerializer will attempt to get phone_number gracefully.
+        return queryset.select_related(
+            'property',
+            'agent',
+            'client_user'
+        ).prefetch_related(
+            'property__images' # Keep this if your Property model has an 'images' related manager
+                               # and BasicPropertySerializer needs it for performance.
+        ).order_by('-date', '-time')
+
+    def perform_create(self, serializer):
+        # Logic is now primarily in serializer.create()
+        serializer.save()

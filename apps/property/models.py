@@ -54,7 +54,7 @@ class Property(models.Model):
     
     # Contact Information
     contact_name = models.CharField(max_length=100, null=True, blank=True)
-    contact_phone = models.CharField(max_length=20, null=True, blank=True)
+    contact_phone = models.CharField(max_length=10, null=True, blank=True)
     
     # Metadata
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='properties')
