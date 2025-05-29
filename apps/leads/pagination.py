@@ -7,4 +7,4 @@ class StandardResultsSetPagination(PageNumberPagination):
     """
     page_size = 10  # Default number of items per page
     page_size_query_param = 'page_size'  # Allows client to set page_size via query param
-    max_page_size = 100  # Maximum page size client can request
+    max_page_size = 100  # Maximum page size client can request 
