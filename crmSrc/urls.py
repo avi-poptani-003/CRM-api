@@ -8,7 +8,7 @@ urlpatterns = [
     path('api/', include(('apps.accounts.urls', 'accounts'), namespace='accounts')),
     path('api/', include(('apps.property.urls', 'property'), namespace='property')),
     path('api/', include(('apps.leads.urls', 'leads'), namespace='leads')),
-    path('api/site-visits/', include('apps.site_visits.urls')),
+    path('api/', include(('apps.site_visits.urls', 'site_visits'), namespace='site_visits'))
 ]
 
 # Add media URL configuration for property images
