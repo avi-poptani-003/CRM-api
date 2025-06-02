@@ -235,7 +235,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             
             # Ensure all fields from the model are present, even if empty, for consistent CSV columns
             # This list should ideally match your model fields or desired export columns
-            all_model_fields = [f.name for f in Lead._meta.get_fields() if not f.is_relation or f.one_to_one or (f.many_to_one and f.related_name)]
+            all_model_fields = [f.name for f in Lead._meta.get_fields() if not f.is_relation or f.one_to_one or (f.many_to_one and f.related_model)]
             # Add custom fields from serializer
             custom_fields = ['assigned_to_name', 'assigned_to_email', 'created_by_name', 'created_by_email']
             

@@ -171,7 +171,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'crm_db',
         'USER': 'postgres',
-        'PASSWORD': 'root',
+        'PASSWORD': 'postgres',  # Change to your database password
         'HOST': 'localhost',
         'PORT': '5432'
     }
@@ -245,6 +245,6 @@ EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'  # e.g., 'smtp.gmail.com'
 EMAIL_PORT = 587  # Or 465 for SSL
 EMAIL_USE_TLS = True  # Or EMAIL_USE_SSL = True if your provider uses SSL
-EMAIL_HOST_USER = 'your_smtp_email'  # Your email account
-EMAIL_HOST_PASSWORD = 'your_app_password'  # Your email password
+EMAIL_HOST_USER = 'your email account' # Your email account
+EMAIL_HOST_PASSWORD = 'your password' # Your email password
 DEFAULT_FROM_EMAIL = 'noreply@yourdomain.com' # Default 'from' address for automated emails

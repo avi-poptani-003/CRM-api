@@ -16,16 +16,19 @@ class SiteVisit(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True
+        # Ensure this User model has a 'role' field (e.g., role='agent')
+        # or some other way to identify agents, which will be used in serializers/admin.
     )
     client_user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         related_name='site_visits_as_client',
         on_delete=models.CASCADE
+        # Ensure this User model can have a 'role' field (e.g., role='client')
     )
     client_name_manual = models.CharField(max_length=255, blank=True, null=True, help_text="Client name if not linked to a user account")
     client_phone_manual = models.CharField(max_length=20, blank=True, null=True, help_text="Client phone if not linked to a user account")
     date = models.DateField()
-    time = models.CharField(max_length=20)
+    time = models.CharField(max_length=20) # Consider models.TimeField if appropriate for your time string format
     status = models.CharField(
         max_length=50,
         choices=[
@@ -47,5 +50,12 @@ class SiteVisit(models.Model):
         verbose_name_plural = "Site Visits"
 
     def __str__(self):
-        client_display = self.client_user.get_full_name() or self.client_user.username if self.client_user else self.client_name_manual
-        return f"Visit for {self.property.title} with {client_display} on {self.date}"
+        client_display_name_str = "N/A Client"
+        if self.client_user:
+            client_display_name_str = self.client_user.get_full_name() or self.client_user.username
+        elif self.client_name_manual:
+            client_display_name_str = self.client_name_manual
+        
+        property_title_str = self.property.title if self.property else "N/A Property"
+        
+        return f"Visit for {property_title_str} with {client_display_name_str} on {self.date}"

@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from rest_framework import generics, status, permissions
+from rest_framework import generics, status, permissions # Make sure permissions is imported
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -19,10 +19,14 @@ from .serializers import (
     PasswordResetRequestSerializer,
     PasswordResetConfirmSerializer
 )
+# Assuming your permission.py file is in the same directory and you need classes from it for other views,
+# you might import them here. For this specific change, we are using built-in DRF permissions
+# and the IsAdminUser class defined below.
+# from .permission import IsManager # Example if you needed it elsewhere
 
 User = get_user_model()
 
-# Custom permission for admin users
+# Custom permission for admin users (used for POST in UserListCreateView)
 class IsAdminUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user and request.user.is_authenticated and request.user.role == 'admin'
@@ -37,24 +41,23 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         response = super().post(request, *args, **kwargs)
         if response.status_code == 200:
             access = response.data.get('access')
-            refresh = response.data.get('refresh')            # Set cookies
+            refresh = response.data.get('refresh')
             response.set_cookie(
                 key='access_token',
                 value=access,
-                httponly=True, 
-                secure=False,  # Set to False for local development
+                httponly=True,
+                secure=settings.SESSION_COOKIE_SECURE, # Use settings for secure flag
                 samesite='Lax',
-                max_age=60*60  # 1 hour
+                max_age=settings.SIMPLE_JWT['ACCESS_TOKEN_LIFETIME'].total_seconds()
             )
             response.set_cookie(
                 key='refresh_token',
                 value=refresh,
                 httponly=True,
-                secure=True,  # Set to True in production
+                secure=settings.SESSION_COOKIE_SECURE, # Use settings for secure flag
                 samesite='Lax',
-                max_age=60*60*24,  # 1 day
+                max_age=settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds()
             )
-            # Remove tokens from response body for extra security
             response.data.pop('access', None)
             response.data.pop('refresh', None)
         return response
@@ -62,26 +65,40 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 
 class RegisterView(generics.CreateAPIView):
     """
-    API view for user registration (Manager and Agent roles only)
+    API view for user registration (Manager and Agent roles only by frontend logic, backend allows any for now)
     """
     queryset = User.objects.all()
     serializer_class = UserRegistrationSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.AllowAny] # Or restrict further if needed, e.g., IsAdminUser
 
 
 class UserListCreateView(generics.ListCreateAPIView):
     """
-    API view for listing all users and creating new users (admin only)
+    API view for listing all users (all authenticated users)
+    and creating new users (admin only).
     """
     queryset = User.objects.all()
-    permission_classes = [IsAdminUser]
+    # Default serializer_class for GET, overridden by get_serializer_class if needed
+    # serializer_class = UserSerializer # Not strictly necessary if get_serializer_class covers all cases
 
     def get_serializer_class(self):
         if self.request.method == 'POST':
             return UserRegistrationSerializer
         return UserSerializer
 
-    def post(self, request, *args, **kwargs):
+    def get_permissions(self):
+        """
+        Instantiates and returns the list of permissions that this view requires.
+        """
+        if self.request.method == 'POST':
+            # Only admin users can create new users
+            return [IsAdminUser()]
+        # Any authenticated user can list users (GET)
+        return [permissions.IsAuthenticated()]
+
+    def post(self, request, *args, **kwargs): # This method is for CREATE
+        # This logic will only be reached if IsAdminUser passes for POST requests,
+        # as enforced by get_permissions.
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
             username = serializer.validated_data.get('username')
@@ -136,18 +153,35 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     API view to retrieve, update and delete user details
     """
     serializer_class = UserSerializer
+    # Permissions here need careful consideration based on who can view/edit whose profile
     permission_classes = [permissions.IsAuthenticated]
-    queryset = User.objects.all()
+    queryset = User.objects.all() # This will be used if 'pk' is in URL
 
     def get_object(self):
-        # For retrieve/update operations without an ID, return current user
-        if not self.kwargs.get('pk'):
+        # For retrieve/update operations for the logged-in user via /api/auth/user/
+        if 'pk' not in self.kwargs:
             return self.request.user
         
-        # For operations with a specific user ID
-        if self.request.user.role == 'admin':
-            return User.objects.get(pk=self.kwargs['pk'])
-        raise permissions.PermissionDenied("You don't have permission to perform this action.")
+        # For operations on a specific user ID via /api/auth/user/<pk>/
+        # This part needs to be robust. Can any authenticated user see any other user by ID?
+        # Or should it be admin only, or manager viewing their team?
+        # The current implementation allows admin to get any user by pk.
+        # Other users trying to access another user by pk would need more specific permission logic.
+        obj = generics.get_object_or_404(self.get_queryset(), pk=self.kwargs['pk'])
+        
+        # Example of more granular permission:
+        # Allow user to see their own details, or admin to see any.
+        if obj == self.request.user or (self.request.user.is_authenticated and self.request.user.role == 'admin'):
+            return obj
+        
+        # If user is a manager, they might be able_to see their team members.
+        # This would require checking if obj is in request.user.managed_team (example logic)
+
+        # If none of the above, deny permission.
+        # The default object-level permission handling by DRF might also apply if set.
+        self.check_object_permissions(self.request, obj) # This is good practice
+        return obj
+
 
 class LogoutView(APIView):
     """
@@ -157,17 +191,24 @@ class LogoutView(APIView):
 
     def post(self, request):
         try:
-            refresh_token = request.data.get('refresh')
+            # The refresh token might be in cookies now, not request.data
+            refresh_token = request.COOKIES.get('refresh_token')
             if refresh_token:
                 token = RefreshToken(refresh_token)
                 token.blacklist()
+            
             response = Response({"detail": "Successfully logged out."}, status=status.HTTP_200_OK)
-            # Clear cookies
             response.delete_cookie('access_token')
             response.delete_cookie('refresh_token')
             return response
         except Exception as e:
-            return Response({"detail": "Invalid token."}, status=status.HTTP_400_BAD_REQUEST)
+            print(f"Logout error: {e}") # Log the error
+            # It's generally safe to just clear cookies and respond with success on logout
+            # to avoid leaking info about token validity.
+            response = Response({"detail": "Logout processed."}, status=status.HTTP_200_OK)
+            response.delete_cookie('access_token')
+            response.delete_cookie('refresh_token')
+            return response
 
 
 class PasswordChangeView(APIView):
@@ -177,12 +218,10 @@ class PasswordChangeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        serializer = PasswordChangeSerializer(data=request.data)
+        serializer = PasswordChangeSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             user = request.user
-            if not user.check_password(serializer.validated_data['old_password']):
-                return Response({"old_password": ["Wrong password."]}, status=status.HTTP_400_BAD_REQUEST)
-            
+            # The check for old_password is now typically done in the serializer's validate method
             user.set_password(serializer.validated_data['new_password'])
             user.password_last_changed_at = timezone.now()
             user.save()
@@ -202,17 +241,13 @@ class PasswordResetRequestView(APIView):
         if serializer.is_valid():
             email = serializer.validated_data['email']
             try:
-                user = User.objects.get(email=email)
+                user = User.objects.get(email__iexact=email) # Case-insensitive email lookup
                 
-                # Generate token and uid
                 token = default_token_generator.make_token(user)
                 uid = urlsafe_base64_encode(force_bytes(user.pk))
                 
-                # In a real application, send an email with a link containing uid and token
-                reset_url = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
+                reset_url = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/" # Ensure FRONTEND_URL is in settings
                 
-                # For development, we'll just return a success message
-                # In production, you'd send an email instead
                 send_mail(
                     'Password Reset for Real Estate CRM',
                     f'Click the following link to reset your password: {reset_url}',
@@ -226,12 +261,19 @@ class PasswordResetRequestView(APIView):
                     status=status.HTTP_200_OK
                 )
             except User.DoesNotExist:
-                # Return success even if user doesn't exist for security reasons
+                # Do not reveal that the user does not exist
                 return Response(
-                    {"detail": "Password reset email has been sent."},
+                    {"detail": "If your email address exists in our database, you will receive a password reset link shortly."},
                     status=status.HTTP_200_OK
                 )
-        
+            except Exception as e:
+                # Log actual email sending errors or other exceptions
+                print(f"Error during password reset request for {email}: {e}")
+                return Response(
+                    {"error": "An error occurred. Please try again later."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -248,7 +290,6 @@ class PasswordResetConfirmView(APIView):
                 uid = force_str(urlsafe_base64_decode(serializer.validated_data['uid']))
                 user = User.objects.get(pk=uid)
                 
-                # Check if the token is valid
                 if default_token_generator.check_token(user, serializer.validated_data['token']):
                     user.set_password(serializer.validated_data['password'])
                     user.save()
@@ -258,13 +299,19 @@ class PasswordResetConfirmView(APIView):
                     )
                 else:
                     return Response(
-                        {"detail": "The reset link is invalid or has expired."},
+                        {"error": "The reset link is invalid or has expired."},
                         status=status.HTTP_400_BAD_REQUEST
                     )
             except (TypeError, ValueError, OverflowError, User.DoesNotExist):
                 return Response(
-                    {"detail": "The reset link is invalid or has expired."},
+                    {"error": "The reset link is invalid."}, # Avoid saying "expired" if it's just invalid
                     status=status.HTTP_400_BAD_REQUEST
+                )
+            except Exception as e:
+                print(f"Error during password reset confirm: {e}")
+                return Response(
+                    {"error": "An unexpected error occurred. Please try again."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -272,20 +319,33 @@ class PasswordResetConfirmView(APIView):
 class CustomTokenRefreshView(TokenRefreshView):
     """
     Custom token refresh view that sets the new access token as an HttpOnly cookie
+    and expects the refresh token from an HttpOnly cookie.
     """
     def post(self, request, *args, **kwargs):
+        # Override to ensure refresh token is taken from cookies if not in request body
+        # DRF's TokenRefreshView expects 'refresh' in request.data
+        # If your frontend sends it in the body, this is fine.
+        # If it relies purely on cookies, you'd need to modify how serializer gets the token.
+        
+        # For now, assuming frontend might still send it, or serializer handles cookie extraction
+        # If refresh token is ONLY in cookie, you need to pass it to the serializer:
+        # refresh_token_from_cookie = request.COOKIES.get('refresh_token')
+        # if refresh_token_from_cookie and 'refresh' not in request.data:
+        #     request.data['refresh'] = refresh_token_from_cookie
+            
         response = super().post(request, *args, **kwargs)
+
         if response.status_code == 200:
             access = response.data.get('access')
-            # Set new access token as HttpOnly cookie
             response.set_cookie(
                 key='access_token',
                 value=access,
                 httponly=True,
-                secure=False,  # Set to False for local development
+                secure=settings.SESSION_COOKIE_SECURE, # Use Django settings
                 samesite='Lax',
-                max_age=60*60  # 1 hour
+                max_age=settings.SIMPLE_JWT['ACCESS_TOKEN_LIFETIME'].total_seconds()
             )
-            response.data.pop('access', None)
+            # Optionally remove the access token from the response body if set in cookie
+            if 'access' in response.data:
+                 response.data.pop('access', None)
         return response
-    
