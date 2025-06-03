@@ -1,6 +1,9 @@
 # site_visits_app/views.py
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated # Or your preferred permission
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.utils import timezone
 from .models import SiteVisit
 from .serializers import SiteVisitSerializer
 
@@ -40,6 +43,22 @@ class SiteVisitViewSet(viewsets.ModelViewSet):
         # handled within the SiteVisitSerializer.create() method.
         # You could add additional logic here if needed, e.g., sending notifications.
         serializer.save()
+    
+    @action(detail=False, methods=['get'])
+    def upcoming(self, request):
+        """
+        Returns a short list of the next upcoming site visits.
+        """
+        today = timezone.now().date()
+        
+        # Filter for visits that are from today onwards and are either scheduled or confirmed
+        upcoming_visits = self.get_queryset().filter(
+            date__gte=today,
+            status__in=['scheduled', 'confirmed']
+        ).order_by('date', 'time')[:5]  # Order by ascending date and time, limit to 5
+
+        serializer = self.get_serializer(upcoming_visits, many=True)
+        return Response(serializer.data)
 
     # You can add perform_update if specific logic is needed during updates,
     # but typically serializer.save() handles it based on instance presence.

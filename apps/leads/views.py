@@ -7,12 +7,18 @@ from .serializers import LeadSerializer
 from .permissions import IsOwnerOrAssignedOrAdmin, IsAdminOrManagerUser
 # Assuming pagination.py is in the same directory (your leads app)
 from .pagination import StandardResultsSetPagination
+from django.utils import timezone
+from datetime import timedelta
 
 from rest_framework.parsers import MultiPartParser
 import pandas as pd
 from io import StringIO # Only needed if you were reading CSV from a string, not directly from file
 from django.http import HttpResponse
 from django.db.models import Count
+from django.db.models.functions import TruncDate # For daily grouping
+from django.utils import timezone
+from datetime import timedelta, date
+from dateutil.relativedelta import relativedelta 
 
 
 class LeadViewSet(viewsets.ModelViewSet):
@@ -42,27 +48,85 @@ class LeadViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def dashboard_stats(self, request):
         queryset = self.filter_queryset(self.get_queryset())
+        now = timezone.now()
+        
+        # --- Monthly KPI Calculation (existing logic) ---
+        current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        previous_month_end = current_month_start - timedelta(days=1)
+        previous_month_start = previous_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        current_month_queryset = queryset.filter(created_at__gte=current_month_start, created_at__lt=now + timedelta(days=1))
+        total_leads_current_month = current_month_queryset.count()
+        converted_leads_current_month = current_month_queryset.filter(status='Converted').count()
+        new_leads_current_month = current_month_queryset.filter(status='New').count()
+        qualified_leads_current_month = current_month_queryset.filter(status='Qualified').count()
+        
+        previous_month_queryset = queryset.filter(created_at__gte=previous_month_start, created_at__lte=previous_month_end.replace(hour=23, minute=59, second=59))
+        total_leads_previous_month = previous_month_queryset.count()
+        converted_leads_previous_month = previous_month_queryset.filter(status='Converted').count()
+        new_leads_previous_month = previous_month_queryset.filter(status='New').count()
+        qualified_leads_previous_month = previous_month_queryset.filter(status='Qualified').count()
+
+        # --- Overall Stats (existing logic) ---
         status_stats = queryset.values('status').annotate(count=Count('status')).order_by('status')
         source_stats = queryset.values('source').annotate(count=Count('source')).order_by('source')
         priority_stats = queryset.values('priority').annotate(count=Count('priority')).order_by('priority')
         recent_leads_qs = queryset.order_by('-created_at')[:5]
         recent_leads_data = LeadSerializer(recent_leads_qs, many=True, context={'request': request}).data
-        total_leads = queryset.count()
-        converted_leads = queryset.filter(status='Converted').count()
-        new_leads = queryset.filter(status='New').count()
-        qualified_leads = queryset.filter(status='Qualified').count()
-        conversion_rate = (converted_leads / total_leads * 100) if total_leads > 0 else 0
+        overall_total_leads = queryset.count()
+        overall_converted_leads = queryset.filter(status='Converted').count()
+        overall_new_leads = queryset.filter(status='New').count()
+        overall_qualified_leads = queryset.filter(status='Qualified').count()
+        overall_conversion_rate = (overall_converted_leads / overall_total_leads * 100) if overall_total_leads > 0 else 0
+
+        # --- MODIFICATION: Dynamic Daily Leads Calculation ---
+        time_range = request.query_params.get('time_range', 'week') # Default to 'week'
+        today = now.date()
+
+        if time_range == 'year':
+            start_date = today - timedelta(days=364)
+        elif time_range == 'month':
+            start_date = today - timedelta(days=29)
+        else: # Default to 'week'
+            start_date = today - timedelta(days=6)
+
+        daily_leads_data = queryset.filter(created_at__date__gte=start_date)\
+                                   .annotate(date=TruncDate('created_at'))\
+                                   .values('date')\
+                                   .annotate(count=Count('id'))\
+                                   .order_by('date')
         
+        counts_by_date = {item['date'].strftime('%Y-%m-%d'): item['count'] for item in daily_leads_data}
+        
+        all_dates_in_range = [start_date + timedelta(days=i) for i in range((today - start_date).days + 1)]
+
+        formatted_daily_leads = []
+        for dt in all_dates_in_range:
+            date_str = dt.strftime('%Y-%m-%d')
+            formatted_daily_leads.append({
+                'date': date_str,
+                'count': counts_by_date.get(date_str, 0)
+            })
+
         return Response({
-            'total_leads': total_leads,
-            'converted_leads': converted_leads,
-            'new_leads': new_leads,
-            'qualified_leads': qualified_leads,
-            'conversion_rate': round(conversion_rate, 1),
+            'total_leads': overall_total_leads,
+            'converted_leads': overall_converted_leads,
+            'new_leads': overall_new_leads, 
+            'qualified_leads': overall_qualified_leads, 
+            'conversion_rate': round(overall_conversion_rate, 1),
+            'current_month_total_leads': total_leads_current_month,
+            'current_month_converted_leads': converted_leads_current_month,
+            'current_month_new_leads': new_leads_current_month,
+            'current_month_qualified_leads': qualified_leads_current_month,
+            'previous_month_total_leads': total_leads_previous_month,
+            'previous_month_converted_leads': converted_leads_previous_month,
+            'previous_month_new_leads': new_leads_previous_month,
+            'previous_month_qualified_leads': qualified_leads_previous_month,
             'status_distribution': list(status_stats),
             'source_distribution': list(source_stats),
             'priority_distribution': list(priority_stats),
             'recent_leads': recent_leads_data,
+            'daily_leads_added': formatted_daily_leads, # This key now contains dynamic data
         })
 
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser])
