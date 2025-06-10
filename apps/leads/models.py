@@ -1,18 +1,19 @@
 from django.db import models
 from django.conf import settings
+from apps.property.models import Property # <-- ADD THIS IMPORT
 
 class Lead(models.Model):
     STATUS_CHOICES = [
-    ('New', 'New'),
-    ('Contacted', 'Contacted'),
-    ('Site Visit Scheduled', 'Site Visit Scheduled'),
-    ('Site Visit Done', 'Site Visit Done'),
-    ('Qualified', 'Qualified'),
-    ('Proposal', 'Proposal'),
-    ('Negotiation', 'Negotiation'),
-    ('Converted', 'Converted'),
-    ('Dropped', 'Dropped'),
-]
+        ('New', 'New'),
+        ('Contacted', 'Contacted'),
+        ('Site Visit Scheduled', 'Site Visit Scheduled'),
+        ('Site Visit Done', 'Site Visit Done'),
+        ('Qualified', 'Qualified'),
+        ('Proposal', 'Proposal'),
+        ('Negotiation', 'Negotiation'),
+        ('Converted', 'Converted'),
+        ('Dropped', 'Dropped'),
+    ]
     
     SOURCE_CHOICES = [
         ('Website', 'Website'),
@@ -30,6 +31,16 @@ class Lead(models.Model):
         ('High', 'High'),
         ('Urgent', 'Urgent'),
     ]
+
+    # --- ADD THIS FIELD ---
+    property = models.ForeignKey(
+        Property,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="The property this lead is interested in or has converted on."
+    )
+    # --- END OF ADDED FIELD ---
 
     name = models.CharField(max_length=255)
     email = models.EmailField()
@@ -50,7 +61,7 @@ class Lead(models.Model):
     timeline = models.CharField(max_length=255, blank=True)
     requirements = models.TextField(blank=True)
     notes = models.TextField(blank=True)
-    tags = models.JSONField(default=list)
+    tags = models.JSONField(default=list,null=True, blank=True)
     last_activity = models.CharField(max_length=255, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

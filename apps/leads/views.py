@@ -1,3 +1,5 @@
+# apps/leads/views.py
+
 from rest_framework import viewsets, permissions, filters, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -5,21 +7,19 @@ from django_filters.rest_framework import DjangoFilterBackend
 from .models import Lead
 from .serializers import LeadSerializer
 from .permissions import IsOwnerOrAssignedOrAdmin, IsAdminOrManagerUser
-# Assuming pagination.py is in the same directory (your leads app)
 from .pagination import StandardResultsSetPagination
 from django.utils import timezone
 from datetime import timedelta
-
 from rest_framework.parsers import MultiPartParser
 import pandas as pd
-from io import StringIO # Only needed if you were reading CSV from a string, not directly from file
+from io import StringIO
 from django.http import HttpResponse
-from django.db.models import Count
-from django.db.models.functions import TruncDate # For daily grouping
-from django.utils import timezone
-from datetime import timedelta, date
-from dateutil.relativedelta import relativedelta 
+from django.db.models import Count, Sum, Q
+from django.db.models.functions import TruncMonth, TruncDate, Coalesce
+from decimal import Decimal 
+from django.contrib.auth import get_user_model
 
+User = get_user_model()
 
 class LeadViewSet(viewsets.ModelViewSet):
     serializer_class = LeadSerializer
@@ -33,61 +33,107 @@ class LeadViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_superuser or getattr(user, 'role', None) == 'admin':
-            return Lead.objects.all().select_related('assigned_to', 'created_by')
-        elif getattr(user, 'role', None) == 'manager':
+        if user.is_superuser or getattr(user, 'role', None) in ['admin', 'manager']:
             return Lead.objects.all().select_related('assigned_to', 'created_by')
         else:
             return Lead.objects.filter(assigned_to=user).select_related('assigned_to', 'created_by')
 
     def get_permissions(self):
-        if self.action in ['import_leads', 'export_leads', 'dashboard_stats']: # dashboard_stats might also be admin/manager only
+        if self.action in ['import_leads', 'export_leads', 'dashboard_stats', 'revenue_overview']:
             return [permissions.IsAuthenticated(), IsAdminOrManagerUser()]
         return [permission() for permission in self.permission_classes]
 
     @action(detail=False, methods=['get'])
+    def team_performance(self, request):
+        """
+        Calculates and returns the performance metrics for each agent.
+        """
+        # Filter for users who are agents
+        agents = User.objects.filter(role='agent')
+
+        # Annotate the queryset with performance data
+        performance_queryset = agents.annotate(
+            deals=Count('assigned_leads', filter=Q(assigned_leads__status='Converted')),
+            total_leads=Count('assigned_leads'),
+            revenue=Coalesce(Sum(
+                'assigned_leads__property__price',
+                filter=Q(assigned_leads__status='Converted')
+            ), Decimal('0.0'))
+        ).order_by('-revenue')
+
+        # Format the data for the frontend
+        formatted_data = []
+        for agent in performance_queryset:
+            full_name = agent.get_full_name() or agent.username
+            
+            # Build the full URL for the profile image
+            avatar_url = None
+            if agent.profile_image:
+                avatar_url = request.build_absolute_uri(agent.profile_image.url)
+            
+            # Calculate conversion rate
+            conversion_rate = 0
+            if agent.total_leads > 0:
+                conversion_rate = round((agent.deals / agent.total_leads) * 100)
+
+            formatted_data.append({
+                "agent": full_name,
+                "deals": agent.deals,
+                "revenue": agent.revenue,
+                "avatar": avatar_url,
+                "conversionRate": conversion_rate,
+            })
+
+        return Response(formatted_data)
+    
+    @action(detail=False, methods=['get'])
+    def revenue_overview(self, request):
+        """
+        Calculates total revenue and sales from converted leads, grouped by month.
+        'Sales' is simulated as 60% of revenue for demonstration.
+        """
+        converted_leads = Lead.objects.filter(
+            status='Converted',
+            property__price__isnull=False
+        )
+        revenue_by_month = converted_leads.annotate(
+            month=TruncMonth('updated_at')
+        ).values('month').annotate(
+            total_revenue=Sum('property__price')
+        ).values('month', 'total_revenue').order_by('month')
+
+        formatted_data = []
+        for item in revenue_by_month:
+            # Safely get revenue, defaulting to 0 if it's None
+            revenue = item.get('total_revenue') or Decimal('0.0')
+            formatted_data.append({
+                "name": item['month'].strftime('%b'),
+                "revenue": revenue,
+                # --- THIS LINE IS CORRECTED ---
+                "sales": revenue * Decimal('0.6') # Convert 0.6 to a Decimal
+            })
+        return Response(formatted_data)
+        
+    @action(detail=False, methods=['get'])
     def dashboard_stats(self, request):
+        # ... (The rest of your code remains the same)
         queryset = self.filter_queryset(self.get_queryset())
         now = timezone.now()
         
-        # --- Monthly KPI Calculation (existing logic) ---
         current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         previous_month_end = current_month_start - timedelta(days=1)
         previous_month_start = previous_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         
-        current_month_queryset = queryset.filter(created_at__gte=current_month_start, created_at__lt=now + timedelta(days=1))
-        total_leads_current_month = current_month_queryset.count()
-        converted_leads_current_month = current_month_queryset.filter(status='Converted').count()
-        new_leads_current_month = current_month_queryset.filter(status='New').count()
-        qualified_leads_current_month = current_month_queryset.filter(status='Qualified').count()
-        
-        previous_month_queryset = queryset.filter(created_at__gte=previous_month_start, created_at__lte=previous_month_end.replace(hour=23, minute=59, second=59))
-        total_leads_previous_month = previous_month_queryset.count()
-        converted_leads_previous_month = previous_month_queryset.filter(status='Converted').count()
-        new_leads_previous_month = previous_month_queryset.filter(status='New').count()
-        qualified_leads_previous_month = previous_month_queryset.filter(status='Qualified').count()
+        current_month_queryset = queryset.filter(created_at__gte=current_month_start)
+        previous_month_queryset = queryset.filter(created_at__gte=previous_month_start, created_at__lt=current_month_start)
 
-        # --- Overall Stats (existing logic) ---
-        status_stats = queryset.values('status').annotate(count=Count('status')).order_by('status')
-        source_stats = queryset.values('source').annotate(count=Count('source')).order_by('source')
-        priority_stats = queryset.values('priority').annotate(count=Count('priority')).order_by('priority')
-        recent_leads_qs = queryset.order_by('-created_at')[:5]
-        recent_leads_data = LeadSerializer(recent_leads_qs, many=True, context={'request': request}).data
-        overall_total_leads = queryset.count()
-        overall_converted_leads = queryset.filter(status='Converted').count()
-        overall_new_leads = queryset.filter(status='New').count()
-        overall_qualified_leads = queryset.filter(status='Qualified').count()
-        overall_conversion_rate = (overall_converted_leads / overall_total_leads * 100) if overall_total_leads > 0 else 0
-
-        # --- MODIFICATION: Dynamic Daily Leads Calculation ---
-        time_range = request.query_params.get('time_range', 'week') # Default to 'week'
+        time_range = request.query_params.get('time_range', 'week')
         today = now.date()
-
         if time_range == 'year':
             start_date = today - timedelta(days=364)
         elif time_range == 'month':
             start_date = today - timedelta(days=29)
-        else: # Default to 'week'
+        else:
             start_date = today - timedelta(days=6)
 
         daily_leads_data = queryset.filter(created_at__date__gte=start_date)\
@@ -97,38 +143,32 @@ class LeadViewSet(viewsets.ModelViewSet):
                                    .order_by('date')
         
         counts_by_date = {item['date'].strftime('%Y-%m-%d'): item['count'] for item in daily_leads_data}
-        
         all_dates_in_range = [start_date + timedelta(days=i) for i in range((today - start_date).days + 1)]
+        formatted_daily_leads = [{'date': dt.strftime('%Y-%m-%d'), 'count': counts_by_date.get(dt.strftime('%Y-%m-%d'), 0)} for dt in all_dates_in_range]
 
-        formatted_daily_leads = []
-        for dt in all_dates_in_range:
-            date_str = dt.strftime('%Y-%m-%d')
-            formatted_daily_leads.append({
-                'date': date_str,
-                'count': counts_by_date.get(date_str, 0)
-            })
+        overall_total_leads = queryset.count()
+        overall_converted_leads = queryset.filter(status='Converted').count()
 
         return Response({
             'total_leads': overall_total_leads,
             'converted_leads': overall_converted_leads,
-            'new_leads': overall_new_leads, 
-            'qualified_leads': overall_qualified_leads, 
-            'conversion_rate': round(overall_conversion_rate, 1),
-            'current_month_total_leads': total_leads_current_month,
-            'current_month_converted_leads': converted_leads_current_month,
-            'current_month_new_leads': new_leads_current_month,
-            'current_month_qualified_leads': qualified_leads_current_month,
-            'previous_month_total_leads': total_leads_previous_month,
-            'previous_month_converted_leads': converted_leads_previous_month,
-            'previous_month_new_leads': new_leads_previous_month,
-            'previous_month_qualified_leads': qualified_leads_previous_month,
-            'status_distribution': list(status_stats),
-            'source_distribution': list(source_stats),
-            'priority_distribution': list(priority_stats),
-            'recent_leads': recent_leads_data,
-            'daily_leads_added': formatted_daily_leads, # This key now contains dynamic data
+            'new_leads': queryset.filter(status='New').count(), 
+            'qualified_leads': queryset.filter(status='Qualified').count(), 
+            'conversion_rate': round((overall_converted_leads / overall_total_leads * 100) if overall_total_leads > 0 else 0, 1),
+            'current_month_total_leads': current_month_queryset.count(),
+            'current_month_converted_leads': current_month_queryset.filter(status='Converted').count(),
+            'current_month_new_leads': current_month_queryset.filter(status='New').count(),
+            'current_month_qualified_leads': current_month_queryset.filter(status='Qualified').count(),
+            'previous_month_total_leads': previous_month_queryset.count(),
+            'previous_month_converted_leads': previous_month_queryset.filter(status='Converted').count(),
+            'previous_month_new_leads': previous_month_queryset.filter(status='New').count(),
+            'previous_month_qualified_leads': previous_month_queryset.filter(status='Qualified').count(),
+            'status_distribution': list(queryset.values('status').annotate(count=Count('status')).order_by('status')),
+            'source_distribution': list(queryset.values('source').annotate(count=Count('source')).order_by('source')),
+            'recent_leads': LeadSerializer(queryset.order_by('-created_at')[:5], many=True, context={'request': request}).data,
+            'daily_leads_added': formatted_daily_leads,
         })
-
+        
     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser])
     def import_leads(self, request):
         if 'file' not in request.FILES:

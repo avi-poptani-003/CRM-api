@@ -1,10 +1,15 @@
+# apps/leads/admin.py
+
 from django.contrib import admin
 from .models import Lead
 
 @admin.register(Lead)
 class LeadAdmin(admin.ModelAdmin):
-    list_display = ('name', 'email', 'phone', 'status', 'source', 'priority', 'assigned_to', 'created_at')
-    list_filter = ('status', 'source', 'priority', 'created_at')
+    # --- THIS LINE IS UPDATED ---
+    list_display = ('name', 'status', 'property', 'priority', 'assigned_to', 'created_at') # Added 'property'
+    # --- END OF UPDATE ---
+    
+    list_filter = ('status', 'source', 'priority', 'created_at', 'property') # Also added 'property' here for filtering
     search_fields = ('name', 'email', 'phone', 'company')
     readonly_fields = ('created_at', 'updated_at', 'created_by')
     

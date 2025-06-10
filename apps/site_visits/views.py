@@ -64,3 +64,26 @@ class SiteVisitViewSet(viewsets.ModelViewSet):
     # but typically serializer.save() handles it based on instance presence.
     # def perform_update(self, serializer):
     #     serializer.save()
+
+    @action(detail=False, methods=['get'])
+    def summary_counts(self, request):
+        """
+        Returns a summary count of total, pending, and upcoming site visits.
+        """
+        queryset = self.get_queryset()
+        today = timezone.now().date()
+
+        # Calculate the counts
+        total_visits = queryset.count()
+        
+        # "Pending" visits are those that are either scheduled or confirmed
+        pending_visits = queryset.filter(status__in=['scheduled', 'confirmed']).count()
+        
+        # Upcoming visits are those scheduled for today or any future date
+        upcoming_visits = queryset.filter(date__gte=today).count()
+
+        return Response({
+            'total_visits': total_visits,
+            'pending_visits': pending_visits,
+            'upcoming_visits': upcoming_visits,
+        })

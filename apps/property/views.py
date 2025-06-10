@@ -17,7 +17,7 @@ class PropertyViewSet(viewsets.ModelViewSet):
         try:
             user = self.request.user
             # Return all properties for admins and managers
-            if hasattr(user, 'is_admin') and (user.is_admin() or user.is_manager()):
+            if hasattr(user, 'is_admin') and (user.is_admin() or user.is_manager() or user.is_agent()):
                 return Property.objects.all().order_by('-created_at')
             # Return own properties for others
             return Property.objects.filter(created_by=user).order_by('-created_at')
