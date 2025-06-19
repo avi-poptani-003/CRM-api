@@ -14,12 +14,18 @@ from rest_framework.parsers import MultiPartParser
 import pandas as pd
 from io import StringIO
 from django.http import HttpResponse
-from django.db.models import Count, Sum, Q
-from django.db.models.functions import TruncMonth, TruncDate, Coalesce
+from dateutil.relativedelta import relativedelta
+from django.db.models import Count, Sum, F, Case, When, FloatField, IntegerField, Q, Value, Func, functions
+from django.db.models.functions import Coalesce, Cast, TruncMonth, TruncDate, TruncDay, Greatest
 from decimal import Decimal 
 from django.contrib.auth import get_user_model
+from apps.property.models import Property
 
 User = get_user_model()
+
+class NullIfEmpty(Func):
+    function = 'NULLIF'
+    template = "%(function)s(%(expressions)s, '')"
 
 class LeadViewSet(viewsets.ModelViewSet):
     serializer_class = LeadSerializer
@@ -46,73 +52,258 @@ class LeadViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def team_performance(self, request):
         """
-        Calculates and returns the performance metrics for each agent.
+        Get team performance metrics including:
+        - Number of leads handled
+        - Conversion rate
+        - Total revenue from converted leads
+        - Performance trend
         """
-        # Filter for users who are agents
-        agents = User.objects.filter(role='agent')
-
-        # Annotate the queryset with performance data
-        performance_queryset = agents.annotate(
-            deals=Count('assigned_leads', filter=Q(assigned_leads__status='Converted')),
-            total_leads=Count('assigned_leads'),
-            revenue=Coalesce(Sum(
-                'assigned_leads__property__price',
-                filter=Q(assigned_leads__status='Converted')
-            ), Decimal('0.0'))
-        ).order_by('-revenue')
-
-        # Format the data for the frontend
-        formatted_data = []
-        for agent in performance_queryset:
-            full_name = agent.get_full_name() or agent.username
+        try:
+            # Get the last 30 days of data
+            thirty_days_ago = timezone.now() - timedelta(days=30)
             
-            # Build the full URL for the profile image
-            avatar_url = None
-            if agent.profile_image:
-                avatar_url = request.build_absolute_uri(agent.profile_image.url)
+            # Check if we have any users with role='agent'
+            agent_count = User.objects.filter(role__iexact='agent').count()
+            print(f"Found {agent_count} users with role='agent'")
             
-            # Calculate conversion rate
-            conversion_rate = 0
-            if agent.total_leads > 0:
-                conversion_rate = round((agent.deals / agent.total_leads) * 100)
+            # Get all available roles for debugging
+            available_roles = User.objects.values_list('role', flat=True).distinct()
+            print(f"Available roles in the database: {list(available_roles)}")
 
-            formatted_data.append({
-                "agent": full_name,
-                "deals": agent.deals,
-                "revenue": agent.revenue,
-                "avatar": avatar_url,
-                "conversionRate": conversion_rate,
-            })
+            # Check if the assigned_leads relationship exists
+            user_model_fields = [f.name for f in User._meta.get_fields()]
+            if 'assigned_leads' not in user_model_fields:
+                print("Error: 'assigned_leads' relationship not found in User model")
+                return Response(
+                    {'error': 'User model is missing assigned_leads relationship'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            # Get agents and their performance metrics with safe aggregations
+            team_stats = User.objects.filter(
+                role__iexact='agent'  # Case-insensitive match
+            ).annotate(
+                total_leads=Coalesce(Count('assigned_leads'), 0),
+                converted_leads=Coalesce(Count('assigned_leads', filter=Q(assigned_leads__status='Converted')), 0),
+                conversion_rate=Case(
+                    When(total_leads=0, then=Value(0.0)),
+                    default=Cast(
+                        Cast(F('converted_leads'), FloatField()) * 100.0 / 
+                        Cast(F('total_leads'), FloatField()),
+                        output_field=FloatField()
+                    ),
+                ),
+                
+                # Handle budget field with robust validation
+                clean_budget=Case(
+                    When(
+                        Q(assigned_leads__budget='') | 
+                        Q(assigned_leads__budget__isnull=True),
+                        then=Value(0.0)
+                    ),
+                    When(
+                        Q(assigned_leads__budget__regex=r'^[^0-9.-]'),  # Non-numeric values
+                        then=Value(0.0)
+                    ),
+                    default=Case(
+                        When(
+                            Q(assigned_leads__budget__regex=r'^-?\d*\.?\d*$'),  # Valid number
+                            then=functions.Greatest(
+                                Cast(F('assigned_leads__budget'), output_field=FloatField()),
+                                Value(0.0)
+                            )
+                        ),
+                        default=Value(0.0),
+                        output_field=FloatField(),
+                    ),
+                    output_field=FloatField(),
+                ),
+                
+                # Calculate revenue only from converted leads with improved validation
+                revenue=Coalesce(
+                    Sum(
+                        Case(
+                            When(
+                                Q(assigned_leads__status='Converted') &
+                                ~Q(assigned_leads__budget='') &
+                                ~Q(assigned_leads__budget__isnull=True) &
+                                Q(assigned_leads__budget__regex=r'^-?\d*\.?\d*$'),  # Valid number format
+                                then=functions.Greatest(
+                                    Cast('clean_budget', output_field=FloatField()),
+                                    Value(0.0)
+                                )
+                            ),
+                            default=Value(0.0),
+                            output_field=FloatField(),
+                        )
+                    ),
+                    Value(0.0),
+                    output_field=FloatField()
+                ),
+            ).values(
+                'id', 
+                'first_name', 
+                'last_name', 
+                'username',
+                'profile_image',
+                'total_leads',
+                'converted_leads',
+                'conversion_rate',
+                'revenue'
+            )
 
-        return Response(formatted_data)
+            # Print the raw query for debugging
+            print(f"Generated query: {str(team_stats.query)}")
+            print(f"Found {len(team_stats)} agents with stats")
+
+            # Format the data with additional error handling
+            formatted_stats = []
+            for stat in team_stats:
+                try:
+                    name = f"{stat.get('first_name') or ''} {stat.get('last_name') or ''}".strip() or stat.get('username', '')
+                    avatar_url = None
+                    if stat.get('profile_image'):
+                        try:
+                            avatar_url = request.build_absolute_uri(stat['profile_image'])
+                        except Exception as e:
+                            print(f"Error building avatar URL for user {name}: {str(e)}")
+                    
+                    formatted_stats.append({
+                        'agent': name,
+                        'avatar': avatar_url,
+                        'deals': stat.get('converted_leads', 0),
+                        'conversion_rate': round(float(stat.get('conversion_rate', 0) or 0), 1),
+                        'revenue': int(round(float(stat.get('revenue', 0) or 0))),
+                        'total_leads': stat.get('total_leads', 0)
+                    })
+                except Exception as e:
+                    print(f"Error formatting stats for user: {str(e)}")
+                    continue
+
+            # Sort by revenue descending
+            formatted_stats.sort(key=lambda x: x['revenue'], reverse=True)
+            
+            print(f"Returning {len(formatted_stats)} formatted agent stats")
+            return Response(formatted_stats)
+            
+        except Exception as e:
+            import traceback
+            print(f"Error in team_performance endpoint: {str(e)}")
+            print(traceback.format_exc())
+            return Response(
+                {'error': 'An error occurred while fetching team performance data'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
     
     @action(detail=False, methods=['get'])
     def revenue_overview(self, request):
         """
-        Calculates total revenue and sales from converted leads, grouped by month.
-        'Sales' is simulated as 60% of revenue for demonstration.
+        Calculates total revenue and sales commission from converted leads, grouped by period.
+        - Supports daily or monthly grouping based on time range
+        - Handles missing periods with zero values
+        - Sales commission is calculated as 60% of revenue
+        - Improved budget validation and handling
         """
-        converted_leads = Lead.objects.filter(
-            status='Converted',
-            property__price__isnull=False
-        )
-        revenue_by_month = converted_leads.annotate(
-            month=TruncMonth('updated_at')
-        ).values('month').annotate(
-            total_revenue=Sum('property__price')
-        ).values('month', 'total_revenue').order_by('month')
+        try:
+            time_range = request.query_params.get('time_range', 'year')
+            now = timezone.now()
+            start_date = now
+            group_by_day = False
+            date_format = '%b %Y'  # Default monthly format
 
-        formatted_data = []
-        for item in revenue_by_month:
-            # Safely get revenue, defaulting to 0 if it's None
-            revenue = item.get('total_revenue') or Decimal('0.0')
-            formatted_data.append({
-                "name": item['month'].strftime('%b'),
-                "revenue": revenue,
-                # --- THIS LINE IS CORRECTED ---
-                "sales": revenue * Decimal('0.6') # Convert 0.6 to a Decimal
-            })
-        return Response(formatted_data)
+            # Determine time range and grouping
+            if time_range == 'this_month':
+                start_date = now.replace(day=1, hour=0, minute=0, second=0)
+                group_by_day = True
+                date_format = '%b %d'
+            elif time_range == '3_months':
+                start_date = now - relativedelta(months=3)
+                group_by_day = True
+                date_format = '%b %d'
+            elif time_range == '6_months':
+                start_date = now - relativedelta(months=6)
+            else:  # Default to 1 year
+                start_date = now - relativedelta(years=1)
+
+            # Query converted leads with improved budget validation
+            queryset = Lead.objects.filter(
+                status='Converted',
+                updated_at__gte=start_date
+            )
+
+            # Use TruncDay or TruncMonth based on grouping type
+            trunc_period = TruncDay('updated_at') if group_by_day else TruncMonth('updated_at')
+
+            # Calculate revenue with robust budget handling
+            revenue_by_period = queryset.annotate(
+                period=trunc_period,
+                clean_budget=Case(
+                    When(
+                        Q(budget='') | Q(budget__isnull=True),
+                        then=Value(0.0)
+                    ),
+                    When(
+                        Q(budget__regex=r'^[^0-9.-]'),  # Non-numeric values
+                        then=Value(0.0)
+                    ),
+                    default=Case(
+                        When(
+                            Q(budget__regex=r'^-?\d*\.?\d*$'),  # Valid number
+                            then=functions.Greatest(
+                                Cast('budget', output_field=FloatField()),
+                                Value(0.0)
+                            )
+                        ),
+                        default=Value(0.0),
+                        output_field=FloatField(),
+                    ),
+                    output_field=FloatField(),
+                )
+            ).values('period').annotate(
+                total_revenue=Sum('clean_budget')
+            ).values('period', 'total_revenue').order_by('period')
+
+            # Generate all periods in range for consistent data points
+            all_periods = []
+            current = start_date
+            end_date = now.replace(hour=23, minute=59, second=59)  # Include full current day
+
+            while current <= end_date:
+                period = current.replace(hour=0, minute=0, second=0, microsecond=0)
+                if group_by_day:
+                    all_periods.append(period)
+                    current += timedelta(days=1)
+                else:
+                    all_periods.append(period.replace(day=1))  # First day of month for monthly grouping
+                    current += relativedelta(months=1)
+                    current = current.replace(day=1)
+
+            # Create lookup table for existing data
+            existing_data = {
+                item['period'].replace(hour=0, minute=0, second=0, microsecond=0): item['total_revenue'] or 0.0
+                for item in revenue_by_period
+            }
+
+            # Format response with all periods and calculated values
+            formatted_data = []
+            for period in all_periods:
+                revenue = float(existing_data.get(period, 0.0))
+                sales_commission = round(revenue * 0.6, 2)  # 60% commission rate
+                
+                formatted_data.append({
+                    "name": period.strftime(date_format),
+                    "revenue": round(revenue, 2),
+                    "sales": sales_commission
+                })
+
+            return Response(formatted_data)
+            
+        except Exception as e:
+            print(f"Error in revenue_overview endpoint: {str(e)}")
+            return Response(
+                {'error': 'An error occurred while processing revenue data'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
         
     @action(detail=False, methods=['get'])
     def dashboard_stats(self, request):
@@ -310,6 +501,7 @@ class LeadViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+
     @action(detail=False, methods=['get'])
     def export(self, request):
         queryset = self.filter_queryset(self.get_queryset())
@@ -367,3 +559,48 @@ class LeadViewSet(viewsets.ModelViewSet):
         response['Content-Disposition'] = 'attachment; filename="leads_export.csv"'
         df.to_csv(response, index=False, encoding='utf-8-sig')
         return response
+    
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated, IsAdminOrManagerUser])
+    def builder_performance(self, request):
+        """
+        Aggregates performance metrics for each property (builder project).
+        - Total Leads
+        - Total Site Visits (based on Lead status)
+        - Total Conversions
+        - Conversion Rate
+        """
+        try:
+            # This query annotates each Property with the required counts.
+            # I am assuming the property name field is 'title'. 
+            # Please change 'title' to the correct field name from your Property model.
+            performance_data = Property.objects.annotate(
+                leads=Count('lead'),
+                visits=Count('lead', filter=Q(lead__status__in=['Site Visit Done', 'Site Visit Scheduled'])),
+                conversions=Count('lead', filter=Q(lead__status='Converted'))
+            ).annotate(
+                rate=Case(
+                    When(leads__gt=0, then=Cast(F('conversions'), FloatField()) * 100.0 / Cast(F('leads'), FloatField())),
+                    default=Value(0.0),
+                    output_field=FloatField()
+                )
+            ).values(
+                'title', # <-- IMPORTANT: Change 'title' if your property model uses a different field (e.g., 'name')
+                'leads',
+                'visits',
+                'conversions',
+                'rate'
+            ).order_by('-conversions') # Order by most conversions
+
+            # Filter out properties that have no leads
+            active_projects = [p for p in performance_data if p['leads'] > 0]
+
+            return Response(active_projects)
+
+        except Exception as e:
+            import traceback
+            print(f"Error in builder_performance endpoint: {str(e)}")
+            print(traceback.format_exc())
+            return Response(
+                {'error': 'An error occurred while fetching builder performance data'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

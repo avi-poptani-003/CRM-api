@@ -11,4 +11,5 @@ urlpatterns = [
     path('leads/export/', LeadViewSet.as_view({'get': 'export'}), name='lead-export'),
     path('leads/dashboard_stats/', LeadViewSet.as_view({'get': 'dashboard_stats'}), name='lead-dashboard-stats'),
     path('leads/team_performance/', LeadViewSet.as_view({'get': 'team_performance'}), name='lead-team-performance'),
+    path('leads/builder_performance/', LeadViewSet.as_view({'get': 'builder_performance'}), name='lead-builder-performance'),
 ]
